@@ -51,7 +51,6 @@ from __future__ import annotations
 import asyncio
 import difflib
 import io
-import json
 import logging
 import os
 import re
@@ -116,60 +115,23 @@ _VALID_SUBCOMMANDS = frozenset({"show", "fold", "find", "vis", "help", "plumb", 
 # `!plumb` and `!plumbbobfans` are gated by a self-expanding allow-list of
 # Discord usernames (the new handle, `message.author.name` — no discriminators).
 #
-# PLUMB_OWNER_USERNAMES is the hardcoded seed: these users always have access
-# even if the persisted file is missing or corrupt, and can't be removed.
+# PLUMB_OWNER_USERNAMES is the hardcoded seed: these users always have access.
 # Everyone else with access was invited at runtime via `!plumbbobfans` and is
-# persisted to PLUMB_ALLOWED_FILE (a plain JSON list of usernames).
-PLUMB_OWNER_USERNAMES: frozenset[str] = frozenset({"fishisfordogs", "c9i34l6"})
-PLUMB_ALLOWED_FILE: Path = Path(__file__).resolve().parent / "plumb_allowed.json"
-
-
-def _load_plumb_allowed() -> set[str]:
-    """Read the persisted username list. Return empty set if the file is missing
-    or unreadable — owners still have access via the hardcoded seed, so a
-    missing/broken file degrades gracefully rather than locking everyone out."""
-    try:
-        raw = PLUMB_ALLOWED_FILE.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return set()
-    except OSError as e:
-        log.warning("could not read %s: %r", PLUMB_ALLOWED_FILE, e)
-        return set()
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as e:
-        log.warning("invalid JSON in %s: %r", PLUMB_ALLOWED_FILE, e)
-        return set()
-    if not isinstance(data, list):
-        return set()
-    return {str(u) for u in data if isinstance(u, str)}
-
-
-def _save_plumb_allowed(allowed: set[str]) -> bool:
-    """Persist the allow-list. Returns True on success. Writes are
-    atomic-ish (tmp file + rename) so a crash mid-write can't leave a
-    half-written JSON that breaks startup."""
-    tmp = PLUMB_ALLOWED_FILE.with_suffix(PLUMB_ALLOWED_FILE.suffix + ".tmp")
-    try:
-        tmp.write_text(json.dumps(sorted(allowed), indent=2), encoding="utf-8")
-        os.replace(tmp, PLUMB_ALLOWED_FILE)
-        return True
-    except OSError as e:
-        log.warning("could not write %s: %r", PLUMB_ALLOWED_FILE, e)
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
-        return False
+# kept in _plumb_granted for the lifetime of this process only. Restarting
+# the bot wipes the granted list back to just the owners. This is deliberate:
+# nothing touches disk, so nothing ends up in the git repo.
+PLUMB_OWNER_USERNAMES: frozenset[str] = frozenset({"c9i34l6"})
+_plumb_granted: set[str] = set()
 
 
 def _plumb_allowed_set() -> set[str]:
-    """Union of hardcoded owners and the persisted list — the actual check set."""
-    return set(PLUMB_OWNER_USERNAMES) | _load_plumb_allowed()
+    """Union of hardcoded owners and this-session grants — the actual check set."""
+    return set(PLUMB_OWNER_USERNAMES) | _plumb_granted
 
 
 def _is_plumb_allowed(user: discord.abc.User) -> bool:
     return user.name in _plumb_allowed_set()
+
 
 # Image extensions that cpshit (OpenCV) can read. Used to detect image
 # attachments for `!plumb`, same way we detect `.cp` for render commands.
@@ -893,27 +855,20 @@ class OripicBot(discord.Client):
             )
             return
 
-        allowed = _load_plumb_allowed()
         if target in PLUMB_OWNER_USERNAMES:
             await self._reply(
                 message,
                 f"**{_escape_md(target)}** is a permanent owner — already has access. {_CAT}",
             )
             return
-        if target in allowed:
+        if target in _plumb_granted:
             await self._reply(
                 message,
                 f"**{_escape_md(target)}** already has **`!plumb`** access. {_CAT}",
             )
             return
 
-        allowed.add(target)
-        if not _save_plumb_allowed(allowed):
-            await self._reply(
-                message,
-                f"❌ Couldn't save the allow-list to disk. Access not granted. {_CAT}",
-            )
-            return
+        _plumb_granted.add(target)
 
         log.info("plumbbobfans: %s granted !plumb to %s",
                  message.author.name, target)
