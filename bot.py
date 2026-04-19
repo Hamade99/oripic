@@ -845,7 +845,7 @@ class OripicBot(discord.Client):
         """
         usage = (
             'Usage: **@oripic `!plumbbobfans <username>`** — grant access to '
-            "`!plumb`. Only existing fans can invite new ones. "
+            "`!plumb`. Only existing plumb bob fans can invite new ones. "
             f"{_CAT}"
         )
 
@@ -921,7 +921,7 @@ class OripicBot(discord.Client):
         await self._reply(
             message,
             f"✨ Granted **`!plumb`** to **{_escape_md(target)}**, by order of "
-            f"**{_escape_md(message.author.name)}**. Welcome to the fans. {_CAT}",
+            f"**{_escape_md(message.author.name)}**. Welcome to the club. {_CAT}",
         )
 
     async def _resolve_referenced_image(
