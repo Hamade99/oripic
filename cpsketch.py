@@ -1,5 +1,5 @@
 """
-cpshit.py — convert any image into .cp file.
+cpsketch.py — convert any image into .cp file.
 
 Pipeline:
 1. Load image, convert to grayscale, downscale if huge.
@@ -20,10 +20,10 @@ image_to_cp(path, ...)  -> str   # read from disk
 bytes_to_cp(data, ...)  -> str   # decode from memory (no disk I/O)
 
 Usage (CLI):
-python cpshit.py input.jpg                         # defaults (crosshatch)
-python cpshit.py input.jpg --shade-levels 0        # edges only
-python cpshit.py input.jpg --shade-levels 3        # triple-hatch darkest
-python cpshit.py input.jpg --epsilon-frac 0.003    # finer polylines
+python cpsketch.py input.jpg                         # defaults (crosshatch)
+python cpsketch.py input.jpg --shade-levels 0        # edges only
+python cpsketch.py input.jpg --shade-levels 3        # triple-hatch darkest
+python cpsketch.py input.jpg --epsilon-frac 0.003    # finer polylines
 
 Install:
 pip install opencv-python numpy
