@@ -133,7 +133,7 @@ def _is_plumb_allowed(user: discord.abc.User) -> bool:
     return user.name in _plumb_allowed_set()
 
 
-# Image extensions that cpshit (OpenCV) can read. Used to detect image
+# Image extensions that cpsketch(OpenCV) can read. Used to detect image
 # attachments for `!plumb`, same way we detect `.cp` for render commands.
 _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff")
 
@@ -714,7 +714,7 @@ class OripicBot(discord.Client):
 
     # ── plumb command ────────────────────────────────────────────────────────
     async def _do_plumb_cmd(self, message: discord.Message) -> None:
-        """`!plumb` — run cpshit on an image (attached or replied-to) and upload the .cp."""
+        """`!plumb` — run cpsketchon an image (attached or replied-to) and upload the .cp."""
         if not _is_plumb_allowed(message.author):
             log.info(
                 "plumb denied for %s (not in allow-list)", message.author.name
