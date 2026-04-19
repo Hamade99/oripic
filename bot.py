@@ -851,7 +851,7 @@ class OripicBot(discord.Client):
 
         if not _is_plumb_allowed(message.author):
             log.info(
-                "whats a plumb?",
+                "whats a plumb??",
                 message.author.name,
             )
             await self._reply(
