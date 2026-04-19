@@ -51,17 +51,20 @@ from __future__ import annotations
 import asyncio
 import difflib
 import io
+import json
 import logging
 import os
 import re
 import shlex
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import discord
 from dotenv import load_dotenv
 
 import oripic
+from cpshit import bytes_to_cp
 from fold_impl import render_cp_folded_png
 
 load_dotenv()
@@ -107,7 +110,70 @@ _FIND_LOOKBACK_RE = re.compile(
 # that it matches unrelated filenames.
 FUZZY_THRESHOLD = 0.75
 
-_VALID_SUBCOMMANDS = frozenset({"show", "fold", "find", "vis", "help"})
+_VALID_SUBCOMMANDS = frozenset({"show", "fold", "find", "vis", "help", "plumb", "plumbbobfans"})
+
+# ── plumb access control ─────────────────────────────────────────────────────
+# `!plumb` and `!plumbbobfans` are gated by a self-expanding allow-list of
+# Discord usernames (the new handle, `message.author.name` — no discriminators).
+#
+# PLUMB_OWNER_USERNAMES is the hardcoded seed: these users always have access
+# even if the persisted file is missing or corrupt, and can't be removed.
+# Everyone else with access was invited at runtime via `!plumbbobfans` and is
+# persisted to PLUMB_ALLOWED_FILE (a plain JSON list of usernames).
+PLUMB_OWNER_USERNAMES: frozenset[str] = frozenset({"fishisfordogs", "c9i34l6"})
+PLUMB_ALLOWED_FILE: Path = Path(__file__).resolve().parent / "plumb_allowed.json"
+
+
+def _load_plumb_allowed() -> set[str]:
+    """Read the persisted username list. Return empty set if the file is missing
+    or unreadable — owners still have access via the hardcoded seed, so a
+    missing/broken file degrades gracefully rather than locking everyone out."""
+    try:
+        raw = PLUMB_ALLOWED_FILE.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return set()
+    except OSError as e:
+        log.warning("could not read %s: %r", PLUMB_ALLOWED_FILE, e)
+        return set()
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        log.warning("invalid JSON in %s: %r", PLUMB_ALLOWED_FILE, e)
+        return set()
+    if not isinstance(data, list):
+        return set()
+    return {str(u) for u in data if isinstance(u, str)}
+
+
+def _save_plumb_allowed(allowed: set[str]) -> bool:
+    """Persist the allow-list. Returns True on success. Writes are
+    atomic-ish (tmp file + rename) so a crash mid-write can't leave a
+    half-written JSON that breaks startup."""
+    tmp = PLUMB_ALLOWED_FILE.with_suffix(PLUMB_ALLOWED_FILE.suffix + ".tmp")
+    try:
+        tmp.write_text(json.dumps(sorted(allowed), indent=2), encoding="utf-8")
+        os.replace(tmp, PLUMB_ALLOWED_FILE)
+        return True
+    except OSError as e:
+        log.warning("could not write %s: %r", PLUMB_ALLOWED_FILE, e)
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return False
+
+
+def _plumb_allowed_set() -> set[str]:
+    """Union of hardcoded owners and the persisted list — the actual check set."""
+    return set(PLUMB_OWNER_USERNAMES) | _load_plumb_allowed()
+
+
+def _is_plumb_allowed(user: discord.abc.User) -> bool:
+    return user.name in _plumb_allowed_set()
+
+# Image extensions that cpshit (OpenCV) can read. Used to detect image
+# attachments for `!plumb`, same way we detect `.cp` for render commands.
+_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff")
 
 
 def _bang_lower(tok: str) -> str:
@@ -380,6 +446,13 @@ class OripicBot(discord.Client):
             arg_a = parts[2] if len(parts) >= 3 else None
             arg_b = parts[3] if len(parts) >= 4 else None
             await self._do_find_cmd(message, query, arg_a, arg_b)
+
+        elif subcmd == "plumb":
+            await self._do_plumb_cmd(message)
+
+        elif subcmd == "plumbbobfans":
+            target = " ".join(parts[1:]).strip()
+            await self._do_plumbbobfans_cmd(message, target)
 
         elif subcmd == "help":
             await self._do_help_cmd(message)
@@ -677,6 +750,210 @@ class OripicBot(discord.Client):
             allowed_mentions=discord.AllowedMentions.none(),
         )
 
+    # ── plumb command ────────────────────────────────────────────────────────
+    async def _do_plumb_cmd(self, message: discord.Message) -> None:
+        """`!plumb` — run cpshit on an image (attached or replied-to) and upload the .cp."""
+        if not _is_plumb_allowed(message.author):
+            log.info(
+                "plumb denied for %s (not in allow-list)", message.author.name
+            )
+            await self._reply(
+                message,
+                f"❌ **`!plumb`** is restricted. Ask someone with access to run "
+                f"**`!plumbbobfans {message.author.name}`** to add you. {_CAT}",
+            )
+            return
+
+        usage = (
+            "Usage: attach an image and run **@oripic `!plumb`**, "
+            "or reply to a message with an image and run **@oripic `!plumb`**. "
+            f"{_CAT}"
+        )
+
+        # Precedence: image attached to this message first, then the reply target.
+        att = _first_image_attachment(message)
+        src_msg: discord.Message | None = None
+        if att is None:
+            ref_img = await self._resolve_referenced_image(message)
+            if ref_img is not None:
+                src_msg, att = ref_img
+
+        if att is None:
+            await self._reply(message, usage)
+            return
+
+        log.info("plumb: %s (%d bytes)", att.filename, att.size)
+        header = f"**{att.filename}**"
+        if src_msg is not None:
+            header += f" (from {src_msg.author.display_name}, [jump]({src_msg.jump_url}))"
+        status = await self._reply(
+            message, f"⏳ Plumbing {header}… {_CAT}"
+        )
+
+        try:
+            image_bytes = await att.read()
+        except (discord.HTTPException, discord.NotFound) as e:
+            log.warning("could not fetch image for plumb: %r", e)
+            await self._safe_edit(
+                status, f"❌ Couldn't download **{att.filename}** from Discord's CDN. {_CAT}"
+            )
+            return
+
+        try:
+            cp_text = await asyncio.to_thread(bytes_to_cp, image_bytes)
+        except Exception as e:
+            log.exception("plumb failed for %s", att.filename)
+            await self._safe_edit(
+                status, f"❌ Couldn't plumb **{att.filename}**: {e} {_CAT}"
+            )
+            return
+
+        if not cp_text.strip():
+            await self._safe_edit(
+                status,
+                f"⚠️ Plumbed **{att.filename}** but found no line segments. "
+                f"Try a more contrasty image. {_CAT}",
+            )
+            return
+
+        base = Path(att.filename).stem or "plumbed"
+        out_name = f"{base}.cp"
+        out_file = discord.File(
+            io.BytesIO(cp_text.encode("utf-8")),
+            filename=out_name,
+        )
+        num_lines = cp_text.count("\n")
+        await self._edit(
+            status,
+            content=f"Plumbed {header} — **{num_lines}** segment(s). {_CAT}",
+            attachments=[out_file],
+            embeds=[],
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        log.info("plumb sent %s (%d lines)", out_name, num_lines)
+
+    # ── plumbbobfans command ─────────────────────────────────────────────────
+    async def _do_plumbbobfans_cmd(
+        self, message: discord.Message, target: str
+    ) -> None:
+        """`!plumbbobfans <username>` — grant another user access to `!plumb`.
+
+        Accepts either a bare username (`aspen`) or a user mention (`@aspen`,
+        which comes through as `<@12345>` in message.content). We resolve the
+        mention form to the actual username via message.mentions so the stored
+        list stays username-keyed regardless of which form the caller typed.
+        """
+        usage = (
+            'Usage: **@oripic `!plumbbobfans <username>`** — grant access to '
+            "`!plumb`. Only existing fans can invite new ones. "
+            f"{_CAT}"
+        )
+
+        if not _is_plumb_allowed(message.author):
+            log.info(
+                "whats a plumb?",
+                message.author.name,
+            )
+            await self._reply(
+                message,
+                f"❌ Only users with **`!plumb`** access can grant it to others. {_CAT}",
+            )
+            return
+
+        target = target.strip()
+        if not target:
+            await self._reply(message, usage)
+            return
+
+        # If the caller typed @someone, Discord put a mention in the content.
+        # message.mentions is the resolved list in the order they appeared.
+        mention_match = re.fullmatch(r"<@!?(\d+)>", target)
+        if mention_match and message.mentions:
+            mentioned_id = int(mention_match.group(1))
+            for m in message.mentions:
+                if m.id == mentioned_id:
+                    target = m.name
+                    break
+            else:
+                await self._reply(
+                    message,
+                    f"❌ Couldn't resolve that mention to a user. {_CAT}",
+                )
+                return
+
+        # Strip a stray leading `@` if the caller typed `@name` without it
+        # becoming a real Discord mention (e.g. the user isn't in the server).
+        if target.startswith("@"):
+            target = target[1:]
+
+        if not target or any(c.isspace() for c in target):
+            await self._reply(
+                message,
+                f"❌ `{_escape_md(target)}` doesn't look like a valid username. "
+                f"{usage}",
+            )
+            return
+
+        allowed = _load_plumb_allowed()
+        if target in PLUMB_OWNER_USERNAMES:
+            await self._reply(
+                message,
+                f"**{_escape_md(target)}** is a permanent owner — already has access. {_CAT}",
+            )
+            return
+        if target in allowed:
+            await self._reply(
+                message,
+                f"**{_escape_md(target)}** already has **`!plumb`** access. {_CAT}",
+            )
+            return
+
+        allowed.add(target)
+        if not _save_plumb_allowed(allowed):
+            await self._reply(
+                message,
+                f"❌ Couldn't save the allow-list to disk. Access not granted. {_CAT}",
+            )
+            return
+
+        log.info("plumbbobfans: %s granted !plumb to %s",
+                 message.author.name, target)
+        await self._reply(
+            message,
+            f"✨ Granted **`!plumb`** to **{_escape_md(target)}**, by order of "
+            f"**{_escape_md(message.author.name)}**. Welcome to the fans. {_CAT}",
+        )
+
+    async def _resolve_referenced_image(
+        self, message: discord.Message
+    ) -> tuple[discord.Message, discord.Attachment] | None:
+        """If `message` is a reply, return the first image on the referenced message."""
+        ref = message.reference
+        if ref is None or ref.message_id is None:
+            return None
+
+        ref_msg: discord.Message | None = None
+        res = ref.resolved
+        if isinstance(res, discord.Message):
+            ref_msg = res
+        elif res is not None:
+            return None
+        else:
+            try:
+                if ref.channel_id is not None and ref.channel_id != message.channel.id:
+                    ch = await self.fetch_channel(ref.channel_id)
+                else:
+                    ch = message.channel
+                ref_msg = await ch.fetch_message(ref.message_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
+                log.debug("could not load referenced message for image reply: %r", e)
+                return None
+
+        att = _first_image_attachment(ref_msg)
+        if att is None:
+            return None
+        return ref_msg, att
+
     # ── history scans (metadata only) ────────────────────────────────────────
     async def _find_recent_cp(
         self,
@@ -845,6 +1122,19 @@ def _escape_md(s: str) -> str:
 def _first_cp_attachment(message: discord.Message) -> discord.Attachment | None:
     for att in message.attachments:
         if att.filename.lower().endswith(".cp"):
+            return att
+    return None
+
+
+def _first_image_attachment(message: discord.Message) -> discord.Attachment | None:
+    """First image attachment on the message. Uses Discord's content_type when
+    available (covers weird extensions / stripped filenames) and falls back to
+    a filename-extension check."""
+    for att in message.attachments:
+        ct = (att.content_type or "").lower()
+        if ct.startswith("image/"):
+            return att
+        if att.filename.lower().endswith(_IMAGE_EXTS):
             return att
     return None
 
