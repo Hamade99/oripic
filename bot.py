@@ -63,7 +63,7 @@ import discord
 from dotenv import load_dotenv
 
 import oripic
-from cpshit import bytes_to_cp
+from cpsketch import bytes_to_cp
 from fold_impl import render_cp_folded_png
 
 load_dotenv()
