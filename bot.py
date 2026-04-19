@@ -759,8 +759,7 @@ class OripicBot(discord.Client):
             )
             await self._reply(
                 message,
-                f"❌ **`!plumb`** is restricted. Ask someone with access to run "
-                f"**`!plumbbobfans {message.author.name}`** to add you. {_CAT}",
+                f"what? {_CAT}",
             )
             return
 
