@@ -1,34 +1,32 @@
 """
-cpshit.py — convert any image into a (probably nonsensical) .cp file.
+cpshit.py — convert any image into .cp file.
 
 Pipeline:
-  1. Load image, convert to grayscale, downscale if huge.
-  2. Bilateral smooth (preserves edges, flattens textured regions).
-  3. Canny edge detection.
-  4. findContours → approxPolyDP: trace each edge as a polyline,
-     simplify to a small set of line segments per curve.
-  5. Optional tonal shading: sweep parallel hatch lines through regions
-     whose local darkness exceeds per-level cutoffs. Extra levels
-     crosshatch at different angles for tonal gradation.
-  6. Write each segment as a .cp line (edges as mountain folds,
-     hatches as auxiliary).
+1. Load image, convert to grayscale, downscale if huge.
+2. Bilateral smooth (preserves edges, flattens textured regions).
+3. Canny edge detection.
+4. findContours → approxPolyDP: trace each edge as a polyline,
+    simplify to a small set of line segments per curve.
+5. Optional tonal shading: sweep parallel hatch lines through regions
+    whose local darkness exceeds per-level cutoffs. Extra levels
+    crosshatch at different angles for tonal gradation.
+6. Write each segment as a .cp line (edges as mountain folds,
+    hatches as auxiliary).
 
-The output won't be flat-foldable or even sensible — it's meant as novelty,
-not a real origami design.
-
+    
 Public API
 ----------
-    image_to_cp(path, ...)  -> str   # read from disk
-    bytes_to_cp(data, ...)  -> str   # decode from memory (no disk I/O)
+image_to_cp(path, ...)  -> str   # read from disk
+bytes_to_cp(data, ...)  -> str   # decode from memory (no disk I/O)
 
 Usage (CLI):
-  python cpshit.py input.jpg                         # defaults (crosshatch)
-  python cpshit.py input.jpg --shade-levels 0        # edges only
-  python cpshit.py input.jpg --shade-levels 3        # triple-hatch darkest
-  python cpshit.py input.jpg --epsilon-frac 0.003    # finer polylines
+python cpshit.py input.jpg                         # defaults (crosshatch)
+python cpshit.py input.jpg --shade-levels 0        # edges only
+python cpshit.py input.jpg --shade-levels 3        # triple-hatch darkest
+python cpshit.py input.jpg --epsilon-frac 0.003    # finer polylines
 
 Install:
-  pip install opencv-python numpy
+pip install opencv-python numpy
 """
 from __future__ import annotations
 
