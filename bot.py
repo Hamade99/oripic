@@ -120,7 +120,7 @@ _VALID_SUBCOMMANDS = frozenset({"show", "fold", "find", "vis", "help", "plumb", 
 # kept in _plumb_granted for the lifetime of this process only. Restarting
 # the bot wipes the granted list back to just the owners. This is deliberate:
 # nothing touches disk, so nothing ends up in the git repo.
-PLUMB_OWNER_USERNAMES: frozenset[str] = frozenset({"c9i34l6"})
+PLUMB_OWNER_USERNAMES: frozenset[str] = frozenset({"c9i34l6", "ani6648"})
 _plumb_granted: set[str] = set()
 
 
